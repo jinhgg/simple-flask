@@ -2,7 +2,7 @@
 
 from simple_flask import SimpleFlask
 
-app = SimpleFlask()
+app = SimpleFlask(__name__)
 
 @app.route('/')
 def hello():

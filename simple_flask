@@ -1,9 +1,21 @@
 # -*- coding: utf-8 -*-
+import os
+import sys
+
+from jinja2 import Environment, FileSystemLoader, PackageLoader
 from werkzeug.contrib.securecookie import SecureCookie
 from werkzeug.routing import Rule, Map
 from werkzeug.wrappers import Request as RequestBase, Response as ResponseBase
 from werkzeug.exceptions import HTTPException
 from werkzeug.local import LocalStack, LocalProxy
+from werkzeug.wsgi import SharedDataMiddleware
+
+try:
+    import pkg_resources
+
+    pkg_resources.resource_stream
+except (ImportError, AttributeError):
+    pkg_resources = None
 
 
 class Request(RequestBase):
@@ -18,6 +30,10 @@ class Response(ResponseBase):
     default_mimetype = 'text/html'
 
 
+class _RequestGlobals(object):
+    pass
+
+
 class _RequestContext(object):
 
     def __init__(self, app, environ):
@@ -26,7 +42,7 @@ class _RequestContext(object):
             environ)
         self.request = app.request_class(environ)
         self.session = app.open_session(self.request)
-
+        self.g = _RequestGlobals()
 
     def __enter__(self):
         _request_ctx_stack.push(self)
@@ -36,20 +52,56 @@ class _RequestContext(object):
             _request_ctx_stack.pop()
 
 
+def render_template(template_name, **context):
+    current_app.update_template_context(context)
+    return current_app.jinja_env.get_template(template_name).render(context)
+
+
+def render_template_string(source, **context):
+    current_app.update_template_context(context)
+    return current_app.jinja_env.from_string(source).render(context)
+
+
+def _default_template_ctx_processor():
+    reqctx = _request_ctx_stack.top
+    return dict(
+        request=reqctx.request,
+        session=reqctx.session,
+        g=reqctx.g
+    )
+
+
+def _get_package_path(name):
+    try:
+        return os.path.abspath(os.path.dirname(sys.modules[name].__file__))
+    except (KeyError, AttributeError):
+        return os.getcwd()
+
+
 class SimpleFlask(object):
+
     request_class = Request
 
     response_class = Response
+
+    static_path = '/static'
 
     secret_key = 'lijinhang'
 
     session_cookie_name = 'session'
 
-    def __init__(self):
+    jinja_options = dict(
+        autoescape=True,  # 默认开启自动转义，即转义不安全字符为HTML实体，比如“>”、“<”等。
+        extensions=['jinja2.ext.autoescape', 'jinja2.ext.with_']
+    )
+
+    def __init__(self, package_name):
 
         self.debug = False
 
-        self.url_map = Map()
+        self.package_name = package_name
+
+        self.root_path = _get_package_path(self.package_name)
 
         self.view_functions = {}
 
@@ -58,6 +110,37 @@ class SimpleFlask(object):
         self.before_request_funcs = []
 
         self.after_request_funcs = []
+
+        self.template_context_processors = [
+            _default_template_ctx_processor]
+
+        self.url_map = Map()
+
+        if self.static_path is not None:
+            self.url_map.add(Rule(self.static_path + '/<filename>',
+                                  build_only=True, endpoint='static'))
+            if pkg_resources is not None:
+                target = (self.package_name, 'static')
+            else:
+                target = os.path.join(self.root_path, 'static')
+            self.wsgi_app = SharedDataMiddleware(self.wsgi_app, {
+                self.static_path: target
+            })
+
+        self.jinja_env = Environment(loader=self.create_jinja_loader(),
+                                     **self.jinja_options)
+
+    def create_jinja_loader(self):
+
+        if pkg_resources is None:
+            return FileSystemLoader(os.path.join(self.root_path, 'templates'))
+        return PackageLoader(self.package_name)
+
+    def update_template_context(self, context):
+        reqctx = _request_ctx_stack.top
+        # 调用所有使用context_processor装饰器注册的模板上下文处理函数，更新模板上下文
+        for func in self.template_context_processors:
+            context.update(func())
 
     def run(self, host='localhost', port=5000, **options):
         from werkzeug.serving import run_simple
@@ -69,6 +152,7 @@ class SimpleFlask(object):
         # 如果debug为True，开启调试器（debugger）
         options.setdefault('use_debugger', self.debug)
         return run_simple(host, port, self, **options)
+
     def open_session(self, request):
 
         key = self.secret_key
@@ -109,6 +193,10 @@ class SimpleFlask(object):
 
     def after_request(self, f):
         self.after_request_funcs.append(f)
+        return f
+
+    def context_processor(self, f):
+        self.template_context_processors.append(f)
         return f
 
     def match_request(self):
@@ -174,6 +262,8 @@ class SimpleFlask(object):
 
 
 _request_ctx_stack = LocalStack()
+current_app = LocalProxy(lambda: _request_ctx_stack.top.app)
 request = LocalProxy(lambda: _request_ctx_stack.top.request)
 session = LocalProxy(lambda: _request_ctx_stack.top.session)
+g = LocalProxy(lambda: _request_ctx_stack.top.g)
 
