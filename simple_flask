@@ -43,6 +43,7 @@ class _RequestContext(object):
         self.request = app.request_class(environ)
         self.session = app.open_session(self.request)
         self.g = _RequestGlobals()
+        self.flashes = None
 
     def __enter__(self):
         _request_ctx_stack.push(self)
@@ -50,6 +51,22 @@ class _RequestContext(object):
     def __exit__(self, exc_type, exc_value, tb):
         if tb is None or not self.app.debug:
             _request_ctx_stack.pop()
+
+
+def url_for(endpoint, **values):
+    return _request_ctx_stack.top.url_adapter.build(endpoint, values)
+
+
+def flash(message):
+    session['_flashes'] = (session.get('_flashes', [])) + [message]
+
+
+def get_flashed_messages():
+    flashes = _request_ctx_stack.top.flashes
+    if flashes is None:
+        _request_ctx_stack.top.flashes = flashes = \
+            session.pop('_flashes', [])
+    return flashes
 
 
 def render_template(template_name, **context):
@@ -79,7 +96,6 @@ def _get_package_path(name):
 
 
 class SimpleFlask(object):
-
     request_class = Request
 
     response_class = Response
@@ -129,6 +145,11 @@ class SimpleFlask(object):
 
         self.jinja_env = Environment(loader=self.create_jinja_loader(),
                                      **self.jinja_options)
+
+        self.jinja_env.globals.update(
+            url_for=url_for,
+            get_flashed_messages=get_flashed_messages
+        )
 
     def create_jinja_loader(self):
 
