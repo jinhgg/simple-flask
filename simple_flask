@@ -5,6 +5,7 @@ import sys
 from jinja2 import Environment, FileSystemLoader, PackageLoader
 from werkzeug.contrib.securecookie import SecureCookie
 from werkzeug.routing import Rule, Map
+from werkzeug.test import create_environ
 from werkzeug.wrappers import Request as RequestBase, Response as ResponseBase
 from werkzeug.exceptions import HTTPException
 from werkzeug.local import LocalStack, LocalProxy
@@ -174,6 +175,15 @@ class SimpleFlask(object):
         options.setdefault('use_debugger', self.debug)
         return run_simple(host, port, self, **options)
 
+    def test_client(self):
+        from werkzeug.test import Client
+        return Client(self, self.response_class, use_cookies=True)
+
+    def open_resource(self, resource):
+        if pkg_resources is None:
+            return open(os.path.join(self.root_path, resource), 'rb')
+        return pkg_resources.resource_stream(self.package_name, resource)
+
     def open_session(self, request):
 
         key = self.secret_key
@@ -277,6 +287,9 @@ class SimpleFlask(object):
     def request_context(self, environ):
 
         return _RequestContext(self, environ)
+
+    def test_request_context(self, *args, **kwargs):
+        return self.request_context(create_environ(*args, **kwargs))
 
     def __call__(self, environ, start_response):
         return self.wsgi_app(environ, start_response)
