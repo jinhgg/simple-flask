@@ -1,9 +1,20 @@
 # -*- coding: utf-8 -*-
 from werkzeug.routing import Rule, Map
-from werkzeug.wrappers import Response
-from werkzeug.wrappers import Request
+from werkzeug.wrappers import Request as RequestBase, Response as ResponseBase
 from werkzeug.exceptions import HTTPException
 from werkzeug.local import LocalStack, LocalProxy
+
+
+class Request(RequestBase):
+
+    def __init__(self, environ):
+        RequestBase.__init__(self, environ)
+        self.endpoint = None
+        self.view_args = None
+
+
+class Response(ResponseBase):
+    default_mimetype = 'text/html'
 
 
 class _RequestContext(object):
@@ -12,16 +23,20 @@ class _RequestContext(object):
         self.app = app
         self.url_adapter = app.url_map.bind_to_environ(
             environ)
-        self.request = Request(environ)
+        self.request = app.request_class(environ)
 
     def __enter__(self):
         _request_ctx_stack.push(self)
 
     def __exit__(self, exc_type, exc_value, tb):
-        _request_ctx_stack.pop()
+        if tb is None or not self.app.debug:
+            _request_ctx_stack.pop()
 
 
 class SimpleFlask(object):
+    request_class = Request
+
+    response_class = Response
 
     def __init__(self):
         self.debug = False
@@ -29,8 +44,16 @@ class SimpleFlask(object):
         self.view_functions = {}
         self.error_handlers = {}
 
-    def __call__(self, environ, start_response):
-        return self.wsgi_app(environ, start_response)
+    def run(self, host='localhost', port=5000, **options):
+        from werkzeug.serving import run_simple
+
+        if 'debug' in options:
+            self.debug = options.pop('debug')
+        # 如果debug为True，开启重载器（reloader）
+        options.setdefault('use_reloader', self.debug)
+        # 如果debug为True，开启调试器（debugger）
+        options.setdefault('use_debugger', self.debug)
+        return run_simple(host, port, self, **options)
 
     def add_url_rule(self, rule, endpoint, **options):
 
@@ -46,17 +69,13 @@ class SimpleFlask(object):
 
         return decorator
 
-    def run(self, host='localhost', port=5000, **options):
-        from werkzeug.serving import run_simple
+    def errorhandler(self, code):
 
-        if 'debug' in options:
-            self.debug = options.pop('debug')
-        # 如果debug为True，开启重载器（reloader）
-        options.setdefault('use_reloader', self.debug)
-        # 如果debug为True，开启调试器（debugger）
-        options.setdefault('use_debugger', self.debug)
-        return run_simple(host, port, self, **options)
+        def decorator(f):
+            self.error_handlers[code] = f  # 将错误码和函数对象的映射存储到error_handlers字典
+            return f
 
+        return decorator
 
     def match_request(self):
         rv = _request_ctx_stack.top.url_adapter.match()
@@ -78,13 +97,28 @@ class SimpleFlask(object):
                 raise
             return handler(e)
 
+    def make_response(self, rv):
+
+        if isinstance(rv, self.response_class):
+            return rv
+        if isinstance(rv, basestring):
+            return self.response_class(rv)
+        if isinstance(rv, tuple):
+            return self.response_class(*rv)
+        return self.response_class.force_type(rv, request.environ)
 
     def wsgi_app(self, environ, start_response):
-
-        with _RequestContext(self,environ):
+        with self.request_context(environ):
             rv = self.dispatch_request()
-            response = Response(rv)
+            response = self.make_response(rv)
             return response(environ, start_response)
+
+    def request_context(self, environ):
+
+        return _RequestContext(self, environ)
+
+    def __call__(self, environ, start_response):
+        return self.wsgi_app(environ, start_response)
 
 
 _request_ctx_stack = LocalStack()
