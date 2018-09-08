@@ -1,12 +1,24 @@
 # -*- coding: utf-8 -*-
-from werkzeug.serving import run_simple
 
+class SimpleFlask(object):
 
-def application(environ, start_response):
-    start_response('200 OK', [('Content-Type', 'text/html')])
-    return [b'<h1>Hello, web!</h1>']
+    def __init__(self):
+        self.debug = False
 
+    def __call__(self, environ, start_response):
+        return self.wsgi_app(environ, start_response)
 
-if __name__ == '__main__':
-    run_simple('localhost', 5000, application)
+    def run(self, host='localhost', port=5000, **options):
+        from werkzeug.serving import run_simple
+
+        if 'debug' in options:
+            self.debug = options.pop('debug')
+        # 如果debug为True，开启重载器（reloader）
+        options.setdefault('use_reloader', self.debug)
+        # 如果debug为True，开启调试器（debugger）
+        options.setdefault('use_debugger', self.debug)
+        return run_simple(host, port, self, **options)
+
+    def wsgi_app(self, environ, start_response):
+        pass
 
